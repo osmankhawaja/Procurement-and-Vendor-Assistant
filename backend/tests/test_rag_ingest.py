@@ -42,8 +42,9 @@ def test_ingestion_chunks_markdown_and_reports_empty_files(
     assert result.files_indexed == 1
     assert result.chunks_indexed == 1
     assert result.empty_files == ("empty.md",)
-    document = indexed["documents"][0]
-    assert document.metadata["section"] == "Procurement > Approved vendors"
+    documents = indexed["documents"]
+    assert isinstance(documents, list) and len(documents) == 1
+    assert documents[0].metadata["section"] == "Procurement > Approved vendors"
     assert indexed["ids"]
 
 

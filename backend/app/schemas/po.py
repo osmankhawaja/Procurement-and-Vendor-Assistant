@@ -35,8 +35,6 @@ class PurchaseOrderProposal(BaseModel):
 class PurchaseOrder(BaseModel):
     """A complete purchase order or purchase-order draft stored in workflow state."""
 
-    model_config = ConfigDict(extra="forbid")
-
     po_id: str | None = Field(default=None, max_length=128)
     thread_id: str | None = Field(default=None, max_length=128)
     requester_name: str | None = Field(default=None, max_length=200)
@@ -60,7 +58,9 @@ class PurchaseOrder(BaseModel):
 
         for item in self.items:
             calculated_line_total = round(item.quantity * item.unit_price, 2)
-            if item.line_total is not None and not math.isclose(
+            if item.line_total is None:
+                item.line_total = calculated_line_total
+            elif not math.isclose(
                 calculated_line_total, item.line_total, rel_tol=0, abs_tol=0.01
             ):
                 raise ValueError("line_total must equal quantity multiplied by unit_price")

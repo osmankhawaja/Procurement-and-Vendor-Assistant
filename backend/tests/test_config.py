@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from app.config import Settings, configure_langsmith
 
 
@@ -22,7 +24,7 @@ def test_cors_origins_accept_comma_separated_environment_value() -> None:
     ]
 
 
-def test_langsmith_modern_environment_names(monkeypatch) -> None:
+def test_langsmith_modern_environment_names(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "LANGSMITH_API_KEY",
         "LANGCHAIN_API_KEY",

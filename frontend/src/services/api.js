@@ -1,4 +1,7 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(
+  /\/+$/,
+  "",
+);
 const CHAT_REQUEST_TIMEOUT_MS = 125_000;
 
 export class ApiError extends Error {
@@ -9,18 +12,20 @@ export class ApiError extends Error {
   }
 }
 
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function errorMessage(payload, response) {
-  const detail =
-    payload && typeof payload === "object" && !Array.isArray(payload)
-      ? payload.detail
-      : null;
+  const detail = isPlainObject(payload) ? payload.detail : null;
 
   if (typeof detail === "string" && detail.trim()) return detail;
   if (Array.isArray(detail)) {
     const messages = detail
       .map((item) => {
         if (typeof item === "string") return item;
-        if (item && typeof item.msg === "string") return item.msg;
+        if (isPlainObject(item) && typeof item.msg === "string")
+          return item.msg;
         return "";
       })
       .filter(Boolean);
@@ -38,6 +43,7 @@ async function request(path, { method = "GET", body, signal, timeoutMs } = {}) {
   let timeoutController;
   let forwardAbort;
   let requestSignal = signal;
+
   if (timeoutMs !== undefined) {
     timeoutController = new AbortController();
     forwardAbort = () => timeoutController.abort(signal?.reason);
@@ -66,10 +72,15 @@ async function request(path, { method = "GET", body, signal, timeoutMs } = {}) {
     text = await response.text();
   } catch (error) {
     if (timedOut) {
-      throw new ApiError("The procurement request timed out. Please try again.", 408);
+      throw new ApiError(
+        "The procurement request timed out. Please try again.",
+        408,
+      );
     }
     if (error && error.name === "AbortError") throw error;
-    throw new ApiError("Unable to reach the procurement API. Check that the backend is running.");
+    throw new ApiError(
+      "Unable to reach the procurement API. Check that the backend is running.",
+    );
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
     if (forwardAbort) signal?.removeEventListener("abort", forwardAbort);
@@ -81,7 +92,10 @@ async function request(path, { method = "GET", body, signal, timeoutMs } = {}) {
       payload = JSON.parse(text);
     } catch {
       if (response.ok) {
-        throw new ApiError("The API returned a response that was not valid JSON.", response.status);
+        throw new ApiError(
+          "The API returned a response that was not valid JSON.",
+          response.status,
+        );
       }
     }
   }
@@ -93,7 +107,7 @@ async function request(path, { method = "GET", body, signal, timeoutMs } = {}) {
 }
 
 function requireObject(value, endpoint) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!isPlainObject(value)) {
     throw new ApiError(`${endpoint} returned an invalid response.`);
   }
   return value;
@@ -114,23 +128,41 @@ function validateChatResponse(payload) {
   if (!["completed", "waiting_for_approval"].includes(result.status)) {
     throw new ApiError("Chat endpoint returned an invalid workflow status.");
   }
-  if (result.response !== null && typeof result.response !== "string") {
+  if (
+    result.response !== undefined &&
+    result.response !== null &&
+    typeof result.response !== "string"
+  ) {
     throw new ApiError("Chat endpoint returned an invalid assistant response.");
   }
-  if (!Array.isArray(result.citations)) {
+  const citations =
+    result.citations === undefined || result.citations === null
+      ? []
+      : result.citations;
+  if (!Array.isArray(citations)) {
     throw new ApiError("Chat endpoint returned invalid policy citations.");
   }
   if (
+    result.purchase_order !== undefined &&
     result.purchase_order !== null &&
-    (typeof result.purchase_order !== "object" || Array.isArray(result.purchase_order))
+    !isPlainObject(result.purchase_order)
   ) {
     throw new ApiError("Chat endpoint returned an invalid purchase order.");
   }
-  return result;
+  return {
+    ...result,
+    thread_id: result.thread_id.trim(),
+    response: result.response ?? null,
+    citations,
+    purchase_order: result.purchase_order ?? null,
+  };
 }
 
 export async function checkHealth({ signal } = {}) {
-  const result = requireObject(await request("/health", { signal }), "Health endpoint");
+  const result = requireObject(
+    await request("/health", { signal }),
+    "Health endpoint",
+  );
   if (result.status !== "ok") {
     throw new ApiError("Health endpoint did not report a healthy backend.");
   }
@@ -165,16 +197,22 @@ export async function getPendingApprovals({ limit = 100, signal } = {}) {
     throw new TypeError("limit must be an integer between 1 and 500.");
   }
 
-  const result = await request(`/approvals?limit=${limit}`, { signal });
+  const params = new URLSearchParams({ limit: String(limit) });
+  const result = await request(`/approvals?${params.toString()}`, { signal });
   if (!Array.isArray(result)) {
     throw new ApiError("Approvals endpoint returned an invalid response.");
   }
   return result.map((item) => {
     const approval = requireObject(item, "Approvals endpoint");
     if (typeof approval.thread_id !== "string" || !approval.thread_id.trim()) {
-      throw new ApiError("Approvals endpoint returned an item without a thread ID.");
+      throw new ApiError(
+        "Approvals endpoint returned an item without a thread ID.",
+      );
     }
-    return approval;
+    return {
+      ...approval,
+      thread_id: approval.thread_id.trim(),
+    };
   });
 }
 
@@ -201,7 +239,9 @@ export async function resolveApproval(
     }
     const normalized = value.trim();
     if (normalized.length > maxLength) {
-      throw new TypeError(`${field} must be no more than ${maxLength} characters.`);
+      throw new TypeError(
+        `${field} must be no more than ${maxLength} characters.`,
+      );
     }
     if (normalized) body[field] = normalized;
   }
@@ -215,9 +255,11 @@ export async function resolveApproval(
     "Approval endpoint",
   );
   if (payload.thread_id !== id || payload.decision !== decision) {
-    throw new ApiError("Approval endpoint returned a result for a different decision.");
+    throw new ApiError(
+      "Approval endpoint returned a result for a different decision.",
+    );
   }
-  if (!payload.state || typeof payload.state !== "object" || Array.isArray(payload.state)) {
+  if (!isPlainObject(payload.state)) {
     throw new ApiError("Approval endpoint returned an invalid workflow state.");
   }
   return payload;
@@ -229,7 +271,9 @@ export async function getWorkflowDefinition({ signal } = {}) {
     "Workflow definition endpoint",
   );
   if (typeof result.mermaid !== "string") {
-    throw new ApiError("Workflow definition endpoint returned an invalid diagram.");
+    throw new ApiError(
+      "Workflow definition endpoint returned an invalid diagram.",
+    );
   }
   return result;
 }
@@ -240,18 +284,28 @@ export async function getWorkflowState(threadId, { signal } = {}) {
     await request(`/graph/${encodeURIComponent(id)}`, { signal }),
     "Workflow state endpoint",
   );
+
+  const values = result.values === undefined ? {} : result.values;
+  const next = result.next === undefined ? [] : result.next;
+  const tasks = result.tasks === undefined ? [] : result.tasks;
+  const metadata = result.metadata === undefined ? {} : result.metadata;
+
   if (
     typeof result.thread_id !== "string" ||
-    !result.values ||
-    typeof result.values !== "object" ||
-    Array.isArray(result.values) ||
-    !Array.isArray(result.next) ||
-    !Array.isArray(result.tasks) ||
-    !result.metadata ||
-    typeof result.metadata !== "object" ||
-    Array.isArray(result.metadata)
+    !isPlainObject(values) ||
+    !Array.isArray(next) ||
+    !Array.isArray(tasks) ||
+    !isPlainObject(metadata)
   ) {
     throw new ApiError("Workflow state endpoint returned an invalid snapshot.");
   }
-  return result;
+
+  return {
+    ...result,
+    thread_id: result.thread_id.trim(),
+    values,
+    next,
+    tasks,
+    metadata,
+  };
 }

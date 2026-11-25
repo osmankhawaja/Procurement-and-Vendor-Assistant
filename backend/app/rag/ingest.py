@@ -2,13 +2,13 @@
 
 import hashlib
 import json
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from langchain_core.documents import Document
 from langchain_qdrant import QdrantVectorStore
-from langchain_text_splitters import MarkdownHeaderTextSplitter
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 from app.config import get_settings
 from app.rag.retriever import _get_embeddings, _get_vector_store
@@ -39,7 +39,7 @@ def _load_policy_documents(
     markdown_files = sorted(policy_directory.glob("*.md"))
     if not markdown_files:
         raise FileNotFoundError(
-            f"No Markdown policy documents found in {policy_directory}."
+            f"No Markdown (*.md) policy documents found in {policy_directory}."
         )
 
     header_splitter = MarkdownHeaderTextSplitter(
@@ -93,8 +93,10 @@ def _load_policy_documents(
 def _document_id(document: Document, index: int) -> str:
     source = str(document.metadata["source"])
     section = str(document.metadata.get("section", ""))
-    identity = f"{source}\0{section}\0{index}"
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    chunk_preview = document.page_content[:120]
+    identity = f"{source}\0{section}\0{index}\0{chunk_preview}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return str(uuid.UUID(hex=digest[:32]))
 
 
 def ingest_policies(
@@ -104,11 +106,11 @@ def ingest_policies(
 ) -> IngestionSummary:
     """Index the local Markdown policy corpus in the configured Qdrant collection.
 
-    Repeated ingestion uses stable point IDs to update existing chunks. Set
+    Repeated ingestion uses deterministic UUIDs to update existing points. Set
     ``force_recreate`` to replace the configured collection with the current corpus.
     """
     settings = get_settings()
-    directory = policy_directory or POLICY_DIRECTORY
+    directory = Path(policy_directory) if policy_directory is not None else POLICY_DIRECTORY
     documents, empty_files, files_indexed = _load_policy_documents(directory)
     if not documents:
         empty_list = ", ".join(empty_files)
@@ -118,9 +120,11 @@ def ingest_policies(
         )
 
     ids = [_document_id(document, index) for index, document in enumerate(documents)]
+    embeddings = _get_embeddings()
+
     QdrantVectorStore.from_documents(
         documents,
-        embedding=_get_embeddings(),
+        embedding=embeddings,
         ids=ids,
         collection_name=settings.qdrant_collection,
         url=settings.qdrant_url,

@@ -1,7 +1,7 @@
 """Read-only ERP catalog and budget tools exposed through FastMCP."""
 
-import sqlite3
 import re
+import sqlite3
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -45,17 +45,36 @@ _SEARCH_STOP_WORDS = {
     "you",
 }
 
+_INITIALIZED_DATABASES: set[Path] = set()
+
 
 def _database_path() -> Path:
-    return get_settings().erp_db_path()
+    return Path(get_settings().erp_db_path()).resolve()
 
 
-def initialize_erp_database(database_path: str | Path | None = None) -> None:
+def _connect(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(str(path), timeout=10)
+    connection.execute("PRAGMA busy_timeout = 10000")
+    connection.execute("PRAGMA journal_mode = WAL")
+    return connection
+
+
+def initialize_erp_database(
+    database_path: str | Path | None = None,
+    *,
+    force: bool = False,
+) -> None:
     """Create the local ERP tables required by the read-only tools."""
-    path = Path(database_path) if database_path is not None else _database_path()
-    path = path.resolve()
+    path = (
+        Path(database_path).resolve()
+        if database_path is not None
+        else _database_path()
+    )
+    if not force and path in _INITIALIZED_DATABASES and path.exists():
+        return
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(str(path), timeout=10)) as connection:
+    with closing(_connect(path)) as connection:
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS vendors (
@@ -106,6 +125,8 @@ def initialize_erp_database(database_path: str | Path | None = None) -> None:
             """
         )
         connection.commit()
+
+    _INITIALIZED_DATABASES.add(path)
 
 
 def _escaped_like_pattern(query: str) -> str:
@@ -168,9 +189,10 @@ def search_approved_vendors(query: str, limit: int = 10) -> list[dict[str, Any]]
         raise ValueError("query must not be blank")
     row_limit = _validated_limit(limit)
     patterns = _search_patterns(normalized_query)
-    initialize_erp_database()
+    db_path = _database_path()
+    initialize_erp_database(db_path)
 
-    with closing(sqlite3.connect(str(_database_path()), timeout=10)) as connection:
+    with closing(_connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
             f"""
@@ -197,9 +219,10 @@ def search_catalog_items(query: str, limit: int = 10) -> list[dict[str, Any]]:
         raise ValueError("query must not be blank")
     row_limit = _validated_limit(limit)
     patterns = _search_patterns(normalized_query)
-    initialize_erp_database()
+    db_path = _database_path()
+    initialize_erp_database(db_path)
 
-    with closing(sqlite3.connect(str(_database_path()), timeout=10)) as connection:
+    with closing(_connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
             f"""
@@ -242,9 +265,10 @@ def get_department_budget(cost_center_id: str) -> dict[str, Any] | None:
     normalized_id = cost_center_id.strip()
     if not normalized_id:
         raise ValueError("cost_center_id must not be blank")
-    initialize_erp_database()
+    db_path = _database_path()
+    initialize_erp_database(db_path)
 
-    with closing(sqlite3.connect(str(_database_path()), timeout=10)) as connection:
+    with closing(_connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         row = connection.execute(
             """

@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,39 +21,40 @@ async def test_mcp_lookup_returns_only_approved_catalog_and_budget(
         lambda: SimpleNamespace(erp_db_path=lambda: database_path),
     )
     erp_mcp_server.initialize_erp_database()
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            "INSERT INTO vendors (vendor_id, name, status, categories) VALUES (?, ?, ?, ?)",
-            ("vendor-1", "Approved Computing", "APPROVED", "laptops"),
-        )
-        connection.execute(
-            """
-            INSERT INTO products
-                (product_id, item_name, description, vendor_id, unit_price, currency, approved)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            ("product-1", "Business Laptop", "Enterprise notebook", "vendor-1", 750, "USD", 1),
-        )
-        connection.execute(
-            "INSERT INTO vendors (vendor_id, name, status) VALUES (?, ?, ?)",
-            ("vendor-2", "Pending Supplier", "PENDING"),
-        )
-        connection.execute(
-            """
-            INSERT INTO products
-                (product_id, item_name, vendor_id, unit_price, currency, approved)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            ("product-2", "Budget Laptop", "vendor-2", 200, "USD", 1),
-        )
-        connection.execute(
-            """
-            INSERT INTO department_budgets
-                (cost_center_id, department, total_budget, spent_budget, remaining_budget)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            ("CC-IT", "IT", 10000, 2500, 7500),
-        )
+    with closing(sqlite3.connect(database_path)) as connection:
+        with connection:
+            connection.execute(
+                "INSERT INTO vendors (vendor_id, name, status, categories) VALUES (?, ?, ?, ?)",
+                ("vendor-1", "Approved Computing", "APPROVED", "laptops"),
+            )
+            connection.execute(
+                """
+                INSERT INTO products
+                    (product_id, item_name, description, vendor_id, unit_price, currency, approved)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("product-1", "Business Laptop", "Enterprise notebook", "vendor-1", 750, "USD", 1),
+            )
+            connection.execute(
+                "INSERT INTO vendors (vendor_id, name, status) VALUES (?, ?, ?)",
+                ("vendor-2", "Pending Supplier", "PENDING"),
+            )
+            connection.execute(
+                """
+                INSERT INTO products
+                    (product_id, item_name, vendor_id, unit_price, currency, approved)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                ("product-2", "Budget Laptop", "vendor-2", 200, "USD", 1),
+            )
+            connection.execute(
+                """
+                INSERT INTO department_budgets
+                    (cost_center_id, department, total_budget, spent_budget, remaining_budget)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("CC-IT", "IT", 10000, 2500, 7500),
+            )
 
     context = await lookup_procurement_context(
         "laptop",

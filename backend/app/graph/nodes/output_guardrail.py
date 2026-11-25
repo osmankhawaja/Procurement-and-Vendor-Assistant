@@ -1,7 +1,9 @@
+import hashlib
 import json
 import re
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage
@@ -12,11 +14,11 @@ from app.graph.state import ProcurementGraphState
 settings = get_settings()
 
 # ==============================================================================
-# OUTPUT PII & FINANCIAL IDENTIFIER REDACTION RULES (Concept C5)
+# OUTPUT PII & FINANCIAL IDENTIFIER REDACTION RULES
 # ==============================================================================
 
 REDACTION_PATTERNS: List[Tuple[str, str]] = [
-    # US/Corporate EIN / Tax IDs (e.g., 12-3456789)
+    # Corporate EIN / Tax IDs (e.g., 12-3456789)
     (r"\b\d{2}-\d{7}\b", "[REDACTED-CORPORATE-EIN]"),
     # International Bank Account Numbers (IBAN)
     (r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b", "[REDACTED-VENDOR-IBAN]"),
@@ -25,15 +27,26 @@ REDACTION_PATTERNS: List[Tuple[str, str]] = [
         r"(?i)(routing|account|swift)\s*(number|no|#|:)?\s*[:#]?\s*\d{6,17}",
         "[REDACTED-BANK-DETAIL]",
     ),
-    # Social Security Numbers
+    # SSNs
     (r"\b\d{3}-\d{2}-\d{4}\b", "[REDACTED-SSN]"),
     # API Keys / Bearer Tokens
     (r"\b(AIza[0-9A-Za-z\-_]{35}|sk-[a-zA-Z0-9]{20,})\b", "[REDACTED-API-KEY]"),
 ]
 
 
+def _connect_erp_db() -> sqlite3.Connection:
+    db_path = Path(settings.erp_db_path())
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(str(db_path))
+
+
+def _default_po_id(thread_id: str) -> str:
+    digest = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+    return f"PO-2026-{int(digest[:8], 16) % 900 + 100}"
+
+
 def _redact_sensitive_text(text: str) -> str:
-    """Scrubs sensitive tax, banking, and credential strings from LLM outputs."""
+    """Scrubs sensitive tax, banking, and credential strings from outputs."""
     scrubbed = text
     for pattern, replacement in REDACTION_PATTERNS:
         scrubbed = re.sub(pattern, replacement, scrubbed)
@@ -45,27 +58,25 @@ def _commit_final_po_to_erp(
     draft_po: Dict[str, Any],
 ) -> Optional[str]:
     """
-    Commits an approved (or <= $500 auto-approved) Purchase Order to the SQLite ERP
+    Commits an approved (or auto-approved) Purchase Order to the SQLite ERP
     `purchase_orders` ledger and deducts the total from `department_budgets`.
     """
     total_amount = float(draft_po.get("total_amount", 0.0))
     items = draft_po.get("items", [])
 
-    # Only commit if there is an actual requisition with items and positive spend
     if not items or total_amount <= 0:
         return None
 
-    thread_id = state.get("thread_id", "unknown-thread")
-    po_id = draft_po.get("po_id") or f"PO-2026-{abs(hash(thread_id)) % 900 + 100}"
+    thread_id = str(state.get("thread_id") or "unknown-thread")
+    po_id = str(draft_po.get("po_id") or _default_po_id(thread_id))
     cost_center_id = draft_po.get("cost_center_id", "CC-ENG-402")
-    approver_id = state.get("approver_id") or "AUTO-POLICY-SEC-2.1"
+    approver_id = state.get("approver_id") or "AUTO-POLICY"
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    conn = sqlite3.connect(settings.erp_db_path())
+    conn = _connect_erp_db()
     try:
         cursor = conn.cursor()
 
-        # Ensure purchase_orders table exists
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS purchase_orders (
@@ -85,7 +96,6 @@ def _commit_final_po_to_erp(
             """
         )
 
-        # Check if this PO was already committed to prevent double budget deduction
         cursor.execute(
             "SELECT status FROM purchase_orders WHERE po_id = ?",
             (po_id,),
@@ -93,7 +103,6 @@ def _commit_final_po_to_erp(
         existing = cursor.fetchone()
         already_committed = existing is not None and existing[0] == "COMMITTED"
 
-        # Upsert PO as COMMITTED
         cursor.execute(
             """
             INSERT INTO purchase_orders (
@@ -124,7 +133,6 @@ def _commit_final_po_to_erp(
             ),
         )
 
-        # Deduct from department Q4 remaining budget if not already deducted
         if not already_committed:
             cursor.execute(
                 """
@@ -149,32 +157,25 @@ def _commit_final_po_to_erp(
         conn.close()
 
 
-# ==============================================================================
-# LANGGRAPH NODE FUNCTION
-# ==============================================================================
-
-
 async def output_guardrail_node(state: ProcurementGraphState) -> Dict[str, Any]:
     """
-    Concept C5 & Final PO Commit Node:
-    1. Commits approved requisitions (<= $500 auto-approved or manager-approved via HITL)
-       to the SQLite ERP database and updates remaining Q4 department budgets.
-    2. Redacts sensitive corporate EINs, vendor IBANs, or API keys from responses.
-    3. Emits the final confirmation receipt when resuming from manager approval.
+    Output Guardrail & Final PO Commit Node:
+    1. Commits approved/auto-approved requisitions to SQLite ERP and updates budgets.
+    2. Redacts sensitive identifiers or credentials from responses.
+    3. Emits a final confirmation receipt when resuming from approval.
     """
     draft_po = dict(state.get("draft_po") or {})
-    approval_decision = (state.get("approval_decision") or "").lower()
+    approval_decision = str(state.get("approval_decision") or "").lower()
+    is_rejected = approval_decision == "rejected" or draft_po.get("status") == "REJECTED"
     final_po_id: Optional[str] = state.get("final_po_id")
 
-    # Commit PO if a valid draft exists (either <= $500 auto-approved or HITL approved)
-    if draft_po and draft_po.get("items") and draft_po.get("status") != "REJECTED":
+    if not is_rejected and draft_po and draft_po.get("items"):
         committed_id = _commit_final_po_to_erp(state, draft_po)
         if committed_id:
             final_po_id = committed_id
             draft_po["po_id"] = committed_id
             draft_po["status"] = "COMMITTED"
 
-    # Extract latest message and scrub any sensitive patterns
     messages = state.get("messages", [])
     latest_text = ""
     if messages and hasattr(messages[-1], "content"):
@@ -186,7 +187,8 @@ async def output_guardrail_node(state: ProcurementGraphState) -> Dict[str, Any]:
         else:
             latest_text = str(raw)
 
-    # If resuming directly from Manager HITL approval, generate the final PO receipt message
+    next_status = "REJECTED" if is_rejected else "COMPLETED"
+
     if approval_decision == "approved" and final_po_id:
         approver_name = state.get("approver_name", "Tanvir Ahmed")
         notes = state.get("manager_notes", "")
@@ -198,18 +200,17 @@ async def output_guardrail_node(state: ProcurementGraphState) -> Dict[str, Any]:
             f"* **Cost Center:** `{draft_po.get('cost_center_id', 'CC-ENG-402')}`\n"
             f"* **Total Committed Amount:** **${float(draft_po.get('total_amount', 0)):,.2f}**"
             f"{note_line}\n\n"
-            "The requisition has been dispatched to the ERP ledger and deducted from your Q4 department budget."
+            "The requisition has been recorded in the ERP ledger and deducted from the department budget."
         )
         scrubbed_reply = _redact_sensitive_text(receipt_msg)
         return {
             "draft_po": draft_po,
             "final_po_id": final_po_id,
-            "status": "COMPLETED",
+            "status": next_status,
             "messages": [AIMessage(content=scrubbed_reply)],
             "visited_nodes": ["output_guardrail"],
         }
 
-    # Otherwise scrub the agent's existing response message in place if needed
     scrubbed_reply = _redact_sensitive_text(latest_text)
     updated_messages = []
     if scrubbed_reply and scrubbed_reply != latest_text:
@@ -218,7 +219,7 @@ async def output_guardrail_node(state: ProcurementGraphState) -> Dict[str, Any]:
     return {
         "draft_po": draft_po if draft_po else None,
         "final_po_id": final_po_id,
-        "status": "COMPLETED",
+        "status": next_status,
         "messages": updated_messages,
         "visited_nodes": ["output_guardrail"],
     }

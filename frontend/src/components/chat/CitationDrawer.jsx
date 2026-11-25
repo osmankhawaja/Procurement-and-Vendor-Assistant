@@ -11,17 +11,32 @@ function citationLabel(citation) {
   );
 }
 
+function getConfidencePercent(confidence) {
+  if (
+    typeof confidence !== "number" ||
+    !Number.isFinite(confidence) ||
+    confidence < 0 ||
+    confidence > 1
+  ) {
+    return null;
+  }
+  return Math.round(confidence * 100);
+}
+
 export default function CitationDrawer({ citations }) {
   if (!Array.isArray(citations)) return null;
   const sources = citations.filter(
-    (citation) => citation && typeof citation === "object" && !Array.isArray(citation),
+    (citation) =>
+      citation && typeof citation === "object" && !Array.isArray(citation),
   );
   if (sources.length === 0) return null;
 
   return (
     <details className="citation-drawer">
       <summary className="citation-drawer-summary">
-        <span className="citation-summary-mark" aria-hidden="true">§</span>
+        <span className="citation-summary-mark" aria-hidden="true">
+          §
+        </span>
         <span className="citation-summary-copy">
           <strong>Policy sources</strong>
           <span>
@@ -37,16 +52,14 @@ export default function CitationDrawer({ citations }) {
           const source = citationText(citation.source);
           const snippet = citationText(citation.snippet);
           const page = citation.page;
-          const hasConfidence =
-            typeof citation.confidence === "number" &&
-            Number.isFinite(citation.confidence) &&
-            citation.confidence >= 0 &&
-            citation.confidence <= 1;
+          const confidencePercent = getConfidencePercent(citation.confidence);
           const key = `${title}-${section}-${page ?? ""}-${index}`;
 
           return (
             <article className="citation-card" key={key}>
-              <span className="citation-marker">{String(index + 1).padStart(2, "0")}</span>
+              <span className="citation-marker">
+                {String(index + 1).padStart(2, "0")}
+              </span>
               <div className="citation-card-content">
                 <strong>{title}</strong>
                 {section && <span className="citation-section">{section}</span>}
@@ -55,8 +68,8 @@ export default function CitationDrawer({ citations }) {
                   {(typeof page === "string" || typeof page === "number") && (
                     <span>Page {page}</span>
                   )}
-                  {hasConfidence && (
-                    <span>{Math.round(citation.confidence * 100)}% match</span>
+                  {confidencePercent !== null && (
+                    <span>{confidencePercent}% match</span>
                   )}
                 </div>
                 {snippet && <p>{snippet}</p>}

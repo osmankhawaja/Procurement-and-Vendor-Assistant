@@ -10,7 +10,9 @@ class FakeModel:
     def __init__(self, response: procurement_agent.ProcurementAgentResponse) -> None:
         self.response = response
 
-    async def ainvoke(self, messages: list[object]) -> procurement_agent.ProcurementAgentResponse:
+    async def ainvoke(
+        self, messages: list[object]
+    ) -> procurement_agent.ProcurementAgentResponse:
         assert messages[0].type == "system"
         return self.response
 
@@ -56,6 +58,26 @@ def _state() -> dict[str, object]:
     }
 
 
+def _patch_agent_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+    model_response: procurement_agent.ProcurementAgentResponse,
+) -> None:
+    monkeypatch.setattr(
+        procurement_agent, "_build_model", lambda: FakeModel(model_response)
+    )
+    monkeypatch.setattr(
+        procurement_agent, "retrieve_policy_context", _empty_policy_result
+    )
+    monkeypatch.setattr(
+        procurement_agent, "lookup_procurement_context", _lookup_context
+    )
+    monkeypatch.setattr(
+        procurement_agent,
+        "get_settings",
+        lambda: SimpleNamespace(hitl_approval_threshold=500),
+    )
+
+
 @pytest.mark.asyncio
 async def test_procurement_agent_builds_grounded_order_and_flags_approval(
     monkeypatch: pytest.MonkeyPatch,
@@ -77,20 +99,7 @@ async def test_procurement_agent_builds_grounded_order_and_flags_approval(
         response="I prepared the purchase-order draft.",
         draft_po=draft,
     )
-    monkeypatch.setattr(
-        procurement_agent, "_build_model", lambda: FakeModel(model_response)
-    )
-    monkeypatch.setattr(
-        procurement_agent, "retrieve_policy_context", _empty_policy_result
-    )
-    monkeypatch.setattr(
-        procurement_agent, "lookup_procurement_context", _lookup_context
-    )
-    monkeypatch.setattr(
-        procurement_agent,
-        "get_settings",
-        lambda: SimpleNamespace(hitl_approval_threshold=500),
-    )
+    _patch_agent_dependencies(monkeypatch, model_response)
 
     result = await procurement_agent.procurement_agent_node(_state())
 
@@ -121,20 +130,7 @@ async def test_procurement_agent_rejects_order_not_in_approved_catalog(
         response="I prepared the purchase-order draft.",
         draft_po=draft,
     )
-    monkeypatch.setattr(
-        procurement_agent, "_build_model", lambda: FakeModel(model_response)
-    )
-    monkeypatch.setattr(
-        procurement_agent, "retrieve_policy_context", _empty_policy_result
-    )
-    monkeypatch.setattr(
-        procurement_agent, "lookup_procurement_context", _lookup_context
-    )
-    monkeypatch.setattr(
-        procurement_agent,
-        "get_settings",
-        lambda: SimpleNamespace(hitl_approval_threshold=500),
-    )
+    _patch_agent_dependencies(monkeypatch, model_response)
 
     result = await procurement_agent.procurement_agent_node(_state())
 

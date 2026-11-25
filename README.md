@@ -159,7 +159,7 @@ Open the Vite URL printed in the terminal, normally `http://localhost:5173`.
 | `GOOGLE_API_KEY`               | Google Gemini API credential                                                                                 | Required                                       |
 | `PRIMARY_MODEL`                | Primary chat model                                                                                           | `gemini-3.8-flash`                             |
 | `FALLBACK_MODEL`               | Fallback chat model                                                                                          | `gemini-3.5-flash-lite`                        |
-| `EMBEDDING_MODEL`              | RAG embedding model                                                                                          | `text-embedding-004`                           |
+| `EMBEDDING_MODEL`              | RAG embedding model                                                                                          | `models/gemini-embedding-001`                  |
 | `LANGSMITH_API_KEY`            | LangSmith tracing credential                                                                                 | Optional                                       |
 | `LANGSMITH_TRACING`            | Enables LangSmith tracing                                                                                    | `true`                                         |
 | `LANGSMITH_PROJECT`            | LangSmith project name                                                                                       | `ai-powered-procurement`                       |

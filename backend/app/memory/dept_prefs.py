@@ -11,6 +11,8 @@ from typing import Any, Iterator
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MEMORY_DATABASE_PATH = BACKEND_ROOT / "data" / "department_preferences.sqlite"
 
+_INITIALIZED_MEMORY_DBS: set[Path] = set()
+
 
 def _resolve_memory_database_path(
     database_path: str | Path | None = None,
@@ -21,14 +23,34 @@ def _resolve_memory_database_path(
     return path.resolve()
 
 
+def _connect_memory_db(
+    path: Path,
+    *,
+    isolation_level: str | None = "",
+) -> sqlite3.Connection:
+    connection = sqlite3.connect(
+        str(path),
+        timeout=10,
+        isolation_level=isolation_level,
+    )
+    connection.execute("PRAGMA busy_timeout = 10000")
+    connection.execute("PRAGMA journal_mode = WAL")
+    return connection
+
+
 def initialize_memory_database(
     database_path: str | Path | None = None,
+    *,
+    force: bool = False,
 ) -> Path:
     """Create the memory database and its preferences table if they do not exist."""
     path = _resolve_memory_database_path(database_path)
+    if not force and path in _INITIALIZED_MEMORY_DBS and path.exists():
+        return path
+
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    with closing(sqlite3.connect(str(path), timeout=10)) as connection:
+    with closing(_connect_memory_db(path, isolation_level="")) as connection:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS department_preferences (
@@ -40,21 +62,30 @@ def initialize_memory_database(
         )
         connection.commit()
 
+    _INITIALIZED_MEMORY_DBS.add(path)
     return path
 
 
 @contextmanager
 def _memory_connection(
     database_path: str | Path | None = None,
+    *,
+    autocommit_transactions: bool = True,
 ) -> Iterator[sqlite3.Connection]:
     path = initialize_memory_database(database_path)
-    with closing(sqlite3.connect(str(path), timeout=10)) as connection:
+    isolation_level = "" if autocommit_transactions else None
+    with closing(_connect_memory_db(path, isolation_level=isolation_level)) as connection:
         connection.row_factory = sqlite3.Row
         try:
             yield connection
-            connection.commit()
+            if autocommit_transactions:
+                connection.commit()
         except Exception:
-            connection.rollback()
+            if autocommit_transactions:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
             raise
 
 
@@ -148,33 +179,41 @@ def update_department_preferences(
     """Merge preference keys into the department's existing values."""
     normalized_department = _validate_department(department)
     _, normalized_updates = _serialize_preferences(updates)
-    with _memory_connection(database_path) as connection:
+    with _memory_connection(database_path, autocommit_transactions=False) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        row = connection.execute(
-            """
-            SELECT preferences_json
-            FROM department_preferences
-            WHERE department = ?
-            """,
-            (normalized_department,),
-        ).fetchone()
-        current = (
-            _decode_preferences(normalized_department, row["preferences_json"])
-            if row is not None
-            else {}
-        )
-        current.update(normalized_updates)
-        serialized, saved_preferences = _serialize_preferences(current)
-        connection.execute(
-            """
-            INSERT INTO department_preferences (department, preferences_json)
-            VALUES (?, ?)
-            ON CONFLICT(department) DO UPDATE SET
-                preferences_json = excluded.preferences_json,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (normalized_department, serialized),
-        )
+        try:
+            row = connection.execute(
+                """
+                SELECT preferences_json
+                FROM department_preferences
+                WHERE department = ?
+                """,
+                (normalized_department,),
+            ).fetchone()
+            current = (
+                _decode_preferences(normalized_department, row["preferences_json"])
+                if row is not None
+                else {}
+            )
+            current.update(normalized_updates)
+            serialized, saved_preferences = _serialize_preferences(current)
+            connection.execute(
+                """
+                INSERT INTO department_preferences (department, preferences_json)
+                VALUES (?, ?)
+                ON CONFLICT(department) DO UPDATE SET
+                    preferences_json = excluded.preferences_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (normalized_department, serialized),
+            )
+            connection.execute("COMMIT")
+        except Exception:
+            try:
+                connection.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
     return saved_preferences
 
 

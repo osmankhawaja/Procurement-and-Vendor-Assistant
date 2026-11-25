@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
@@ -37,8 +38,18 @@ class FakeVectorStore:
         ]
 
 
+@pytest.fixture
+def isolated_embeddings_cache() -> Iterator[None]:
+    retriever._get_embeddings.cache_clear()
+    try:
+        yield
+    finally:
+        retriever._get_embeddings.cache_clear()
+
+
 def test_embeddings_have_a_bounded_request_timeout(
     monkeypatch: pytest.MonkeyPatch,
+    isolated_embeddings_cache: None,
 ) -> None:
     class FakeEmbeddings:
         def __init__(self, **kwargs: object) -> None:
@@ -53,12 +64,10 @@ def test_embeddings_have_a_bounded_request_timeout(
             embedding_model="test-embedding-model",
         ),
     )
-    retriever._get_embeddings.cache_clear()
 
     embeddings = retriever._get_embeddings()
 
     assert embeddings.kwargs["request_options"] == {"timeout": 30}
-    retriever._get_embeddings.cache_clear()
 
 
 @pytest.mark.asyncio

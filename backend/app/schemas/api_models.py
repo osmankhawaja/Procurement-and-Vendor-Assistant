@@ -48,8 +48,6 @@ class ChatResponse(BaseModel):
 class ApprovalItem(BaseModel):
     """Approval currently paused in the procurement workflow."""
 
-    model_config = ConfigDict(extra="forbid")
-
     thread_id: str
     status: str = "pending"
     next: list[str] = Field(default_factory=list)
@@ -66,6 +64,13 @@ class ApprovalDecision(BaseModel):
     comment: str | None = Field(default=None, max_length=2000)
     approver_id: str | None = Field(default=None, max_length=128)
     approver_name: str | None = Field(default=None, max_length=200)
+
+    @field_validator("decision", mode="before")
+    @classmethod
+    def normalize_decision(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
 
     @field_validator("comment", "approver_id", "approver_name")
     @classmethod

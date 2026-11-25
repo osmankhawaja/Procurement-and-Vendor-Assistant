@@ -10,7 +10,7 @@ from app.api.chat import router
 
 class SlowGraph:
     async def ainvoke(self, input: object, config: dict[str, object]) -> object:
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.2)
         return {"response": "This should not be reached."}
 
 
@@ -22,7 +22,8 @@ def test_chat_times_out_when_workflow_does_not_respond(
     app.include_router(router)
     app.state.procurement_graph = SlowGraph()
 
-    response = TestClient(app).post("/chat", json={"message": "Find a vendor"})
+    with TestClient(app) as client:
+        response = client.post("/chat", json={"message": "Find a vendor"})
 
     assert response.status_code == 504
     assert response.json()["detail"] == (

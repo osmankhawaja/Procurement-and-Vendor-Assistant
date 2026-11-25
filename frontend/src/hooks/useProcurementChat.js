@@ -18,6 +18,7 @@ export default function useProcurementChat() {
   const [error, setError] = useState("");
   const sendingRef = useRef(false);
   const messageSequence = useRef(0);
+  const conversationGenerationRef = useRef(0);
 
   const nextMessageId = useCallback((role) => {
     messageSequence.current += 1;
@@ -30,6 +31,9 @@ export default function useProcurementChat() {
       if (!message || sendingRef.current) return;
 
       sendingRef.current = true;
+      const activeGeneration = conversationGenerationRef.current;
+      const activeThreadId = threadId;
+
       setError("");
       setPrompt("");
       const userMessage = {
@@ -44,39 +48,54 @@ export default function useProcurementChat() {
       try {
         const result = await sendChatMessage({
           message,
-          threadId: threadId || undefined,
+          threadId: activeThreadId || undefined,
         });
-        setThreadId(result.thread_id);
+        if (conversationGenerationRef.current !== activeGeneration) {
+          return;
+        }
+
+        const payload = result && typeof result === "object" ? result : {};
+        if (typeof payload.thread_id === "string" && payload.thread_id.trim()) {
+          setThreadId(payload.thread_id.trim());
+        }
+
         const assistantMessage = {
           id: nextMessageId("assistant"),
           role: "assistant",
           time: new Date(),
           text:
-            result.response ||
-            (result.status === "waiting_for_approval"
+            payload.response ||
+            (payload.status === "waiting_for_approval"
               ? "This request is paused for manager approval."
               : "The workflow completed. Review the purchase details below."),
-          status: result.status,
-          citations: result.citations,
-          purchaseOrder: result.purchase_order,
+          status: payload.status,
+          citations: payload.citations,
+          purchaseOrder: payload.purchase_order,
         };
         setMessages((current) => [...current, assistantMessage]);
       } catch (sendError) {
+        if (conversationGenerationRef.current !== activeGeneration) {
+          return;
+        }
         setError(
           sendError instanceof Error
             ? sendError.message
             : "Unable to send the request. Check the backend connection and try again.",
         );
       } finally {
-        sendingRef.current = false;
-        setIsSending(false);
+        if (conversationGenerationRef.current === activeGeneration) {
+          sendingRef.current = false;
+          setIsSending(false);
+        }
       }
     },
     [nextMessageId, threadId],
   );
 
   const startNewConversation = useCallback(() => {
-    if (sendingRef.current) return;
+    conversationGenerationRef.current += 1;
+    sendingRef.current = false;
+    setIsSending(false);
     setThreadId("");
     setMessages([createWelcomeMessage()]);
     setPrompt("");

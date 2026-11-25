@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
@@ -9,9 +10,8 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.config import settings
+from app.config import get_settings, settings
 from app.schemas.api_models import ChatRequest, ChatResponse
-
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -21,8 +21,10 @@ _PENDING_STATUSES = {
     "approval_pending",
     "pending",
     "requires_approval",
+    "waiting_for_approval",
 }
 _WORKFLOW_TIMEOUT_SECONDS = 120
+
 
 class ProcurementGraph(Protocol):
     async def ainvoke(self, input: Any, config: dict[str, Any]) -> Any: ...
@@ -41,6 +43,14 @@ def _get_graph(request: Request) -> ProcurementGraph:
             detail="The configured procurement workflow cannot process chat requests.",
         )
     return cast(ProcurementGraph, graph)
+
+
+def _get_recursion_limit() -> int:
+    try:
+        active_settings = get_settings()
+    except Exception:
+        active_settings = settings
+    return int(getattr(active_settings, "recursion_limit", 8) or 8)
 
 
 def _message_text(content: Any) -> str | None:
@@ -104,7 +114,7 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
     thread_id = payload.thread_id or str(uuid4())
     config = {
         "configurable": {"thread_id": thread_id},
-        "recursion_limit": settings.recursion_limit,
+        "recursion_limit": _get_recursion_limit(),
         "tags": ["procurement-chat"],
         "metadata": {
             "thread_id": thread_id,
@@ -112,6 +122,7 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
         },
         "run_name": "procurement_chat",
     }
+    started_at = time.perf_counter()
     try:
         result = await asyncio.wait_for(
             graph.ainvoke(
@@ -121,8 +132,10 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
             timeout=_WORKFLOW_TIMEOUT_SECONDS,
         )
     except TimeoutError as exc:
+        elapsed = time.perf_counter() - started_at
         logger.error(
-            "Procurement workflow timed out after %s seconds for thread %s",
+            "Procurement workflow timed out after %.2fs (limit=%ss) for thread %s",
+            elapsed,
             _WORKFLOW_TIMEOUT_SECONDS,
             thread_id,
         )
@@ -130,13 +143,27 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="The procurement workflow timed out. Please try again.",
         ) from exc
+    except asyncio.CancelledError:
+        elapsed = time.perf_counter() - started_at
+        logger.warning(
+            "Procurement workflow task cancelled after %.2fs for thread %s",
+            elapsed,
+            thread_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="The procurement workflow timed out. Please try again.",
+        ) from None
     except (RuntimeError, ValueError, TypeError) as exc:
         logger.exception("Procurement workflow failed for thread %s", thread_id)
         detail = str(exc).strip()
         if "GOOGLE_API_KEY" in detail:
             detail = "GOOGLE_API_KEY is not configured for the backend."
         else:
-            detail = "The procurement workflow could not complete. Check backend logs and service configuration."
+            detail = (
+                "The procurement workflow could not complete. "
+                "Check backend logs and service configuration."
+            )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=detail,
@@ -145,8 +172,12 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
         logger.exception("Unexpected procurement workflow failure for thread %s", thread_id)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="The procurement workflow or an external AI service is unavailable. Please try again.",
+            detail=(
+                "The procurement workflow or an external AI service is unavailable. "
+                "Please try again."
+            ),
         ) from exc
+
     if not isinstance(result, dict):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -184,7 +215,7 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
 
     return ChatResponse(
         thread_id=thread_id,
-        response=response_text,
+        response=response_text or "Approval is required before completing this request.",
         status="waiting_for_approval" if waiting_for_approval else "completed",
         citations=jsonable_encoder(citations),
         purchase_order=jsonable_encoder(purchase_order),

@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -11,6 +12,11 @@ from langgraph.types import Command
 from app.graph import workflow
 from app.graph.nodes import hitl_gate
 from app.graph.state import ProcurementGraphState
+
+
+def _fetch_po_row(database_path: Path, po_id: str, query: str) -> tuple[Any, ...] | None:
+    with closing(sqlite3.connect(database_path)) as connection:
+        return connection.execute(query, (po_id,)).fetchone()
 
 
 @pytest.mark.parametrize(
@@ -101,11 +107,12 @@ async def test_hitl_gate_persists_pending_po_and_resumes(
     assert interrupt_value["event"] == "HITL_APPROVAL_REQUIRED"
     assert interrupt_value["po_id"] == po_id
     assert interrupt_value["threshold_usd"] == 500.0
-    with sqlite3.connect(database_path) as connection:
-        pending = connection.execute(
-            "SELECT status, total_amount FROM purchase_orders WHERE po_id = ?",
-            (po_id,),
-        ).fetchone()
+
+    pending = _fetch_po_row(
+        database_path,
+        po_id,
+        "SELECT status, total_amount FROM purchase_orders WHERE po_id = ?",
+    )
     assert pending == ("PENDING_APPROVAL", 750.0)
 
     resumed = await graph.ainvoke(
@@ -128,9 +135,9 @@ async def test_hitl_gate_persists_pending_po_and_resumes(
     assert resumed["status"] == expected_status
 
     if decision == "rejected":
-        with sqlite3.connect(database_path) as connection:
-            rejected = connection.execute(
-                "SELECT status, approver_id FROM purchase_orders WHERE po_id = ?",
-                (po_id,),
-            ).fetchone()
+        rejected = _fetch_po_row(
+            database_path,
+            po_id,
+            "SELECT status, approver_id FROM purchase_orders WHERE po_id = ?",
+        )
         assert rejected == ("REJECTED", "MGR-1")

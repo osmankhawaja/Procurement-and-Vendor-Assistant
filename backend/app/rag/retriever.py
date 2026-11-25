@@ -1,7 +1,7 @@
 """Policy embedding and retrieval from the configured Qdrant collection."""
 
-import math
 import logging
+import math
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -66,19 +66,15 @@ async def retrieve_policy_context(
         raise ValueError("top_k must be greater than zero.")
 
     try:
-        matches = await _get_vector_store().asimilarity_search_with_relevance_scores(
+        vector_store = _get_vector_store()
+        matches = await vector_store.asimilarity_search_with_relevance_scores(
             normalized_query,
             k=result_limit,
         )
-    except (ConnectionError, TimeoutError, RuntimeError, ValueError) as exc:
+    except Exception as exc:
+        _get_vector_store.cache_clear()
         logger.warning(
             "Policy retrieval unavailable; continuing without RAG context: %s",
-            exc,
-        )
-        return PolicyRetrievalResult(context="", citations=[])
-    except Exception as exc:
-        logger.warning(
-            "Unexpected policy retrieval failure; continuing without RAG context: %s",
             exc,
         )
         return PolicyRetrievalResult(context="", citations=[])

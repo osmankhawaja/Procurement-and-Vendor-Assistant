@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage
 from app.graph.state import ProcurementGraphState
 
 # ==============================================================================
-# GUARDRAIL RULES & DEFINITIONS (Concept C5)
+# GUARDRAIL RULES & DEFINITIONS
 # ==============================================================================
 
 # 1. Adversarial prompt-injection & budget-bypass patterns
@@ -21,7 +21,7 @@ INJECTION_PATTERNS: List[Tuple[str, str]] = [
     ),
     (
         r"approve\s+.*as\s+\$?\d+\s*(office\s+supplies|misc)",
-        "Attempt to misclassify high-value spend to evade the $500 approval threshold.",
+        "Attempt to misclassify high-value spend to evade the approval threshold.",
     ),
     (
         r"(reveal|print|dump|show)\s+(your\s+)?(system\s+prompt|hidden\s+instructions|api\s*key)",
@@ -30,8 +30,6 @@ INJECTION_PATTERNS: List[Tuple[str, str]] = [
 ]
 
 # 2. Explicitly Blacklisted / Sanctioned Vendors (Hard Block before LLM runs)
-# Note: General unverified vendors like "ABC Tech" are handled by the agent so it can
-# suggest approved catalog alternatives (e.g., Global IT Solutions) per Demo Scenario 1.
 BLACKLISTED_VENDORS: Dict[str, str] = {
     "shadowsupply": "Sanctioned for counterfeit hardware components (Compliance Bulletin 2025-09).",
     "rogueit": "Blacklisted due to data-breach non-compliance (Security Manual Sec 6.1).",
@@ -69,15 +67,14 @@ def _check_input_safety(text: str) -> Tuple[bool, str, List[Dict[str, Any]]]:
     """
     lowered = text.lower()
 
-    # Check 1: Prompt Injection / Budget Bypass
     for pattern, reason in INJECTION_PATTERNS:
         if re.search(pattern, lowered):
             refusal = (
-                "**Request Blocked by Security Guardrail (Policy Sec 1.4, p. 3)**\n\n"
+                "**Request Blocked by Security Guardrail**\n\n"
                 f"I cannot process this request because a policy-override or prompt-injection "
                 f"pattern was detected (*{reason}*).\n\n"
-                "All purchase requisitions must adhere strictly to Corporate Procurement Policy v2.4 "
-                "and undergo automated budget and manager approval checks."
+                "All purchase requisitions must follow corporate procurement policy and undergo "
+                "standard budget and approval checks."
             )
             citations = [
                 {
@@ -89,15 +86,13 @@ def _check_input_safety(text: str) -> Tuple[bool, str, List[Dict[str, Any]]]:
             ]
             return True, refusal, citations
 
-    # Check 2: Explicitly Blacklisted Vendors
     for vendor_key, ban_reason in BLACKLISTED_VENDORS.items():
         if vendor_key in lowered:
             refusal = (
-                f"**Blacklisted Vendor Refusal (Security Manual Sec 6.1, p. 10)**\n\n"
-                f"Transactions with **{vendor_key.title()}** are strictly prohibited. "
+                f"**Blacklisted Vendor Refusal**\n\n"
+                f"Transactions with **{vendor_key.title()}** are prohibited. "
                 f"Reason: *{ban_reason}*\n\n"
-                "Please specify an approved enterprise partner (such as **Apple Enterprise Partner**, "
-                "**Dell Corporate**, or **Global IT Solutions**) or ask me to search our approved vendor catalog."
+                "Please specify an approved vendor from the catalog or ask me to search approved suppliers."
             )
             citations = [
                 {
@@ -109,31 +104,24 @@ def _check_input_safety(text: str) -> Tuple[bool, str, List[Dict[str, Any]]]:
             ]
             return True, refusal, citations
 
-    # Check 3: Out-of-Scope Queries (HR Payroll / Personal Advice)
     for pattern in OUT_OF_SCOPE_PATTERNS:
         if re.search(pattern, lowered):
             refusal = (
                 "**Out-of-Scope Request**\n\n"
-                "I am the **Enterprise Procurement & Vendor Management Assistant**. I can only assist "
-                "with corporate hardware, cloud infrastructure, SaaS license requisitions, vendor "
-                "catalog lookups, budget checks, and procurement policy compliance.\n\n"
-                "For HR payroll or personal inquiries, please contact the People Operations portal."
+                "I am the **Procurement & Vendor Management Assistant**. I can assist with "
+                "hardware, cloud, or software requisitions, approved vendor lookups, budget checks, "
+                "and procurement policies."
             )
             return True, refusal, []
 
     return False, "", []
 
 
-# ==============================================================================
-# LANGGRAPH NODE FUNCTION
-# ==============================================================================
-
-
 async def input_guardrail_node(state: ProcurementGraphState) -> Dict[str, Any]:
     """
-    Concept C5: Pre-execution Input Guardrail Node.
-    Runs before `procurement_agent` to block prompt injections, blacklisted vendors,
-    and out-of-scope requests without incurring LLM or MCP tool execution costs.
+    Pre-execution Input Guardrail Node.
+    Runs before the main procurement agent to block prompt injections, blacklisted vendors,
+    and out-of-scope requests early.
     """
     user_text = _extract_latest_user_text(state)
     is_blocked, refusal_message, citations = _check_input_safety(user_text)

@@ -1,5 +1,6 @@
 """Endpoints for inspecting procurement workflow graphs and checkpoints."""
 
+import asyncio
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Protocol, cast
@@ -83,7 +84,8 @@ async def graph_definition(request: Request) -> GraphDefinitionResponse:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="The configured procurement workflow cannot provide a graph diagram.",
         )
-    diagram = get_graph().draw_mermaid()
+    compiled_graph = get_graph()
+    diagram = await asyncio.to_thread(compiled_graph.draw_mermaid)
     return GraphDefinitionResponse(mermaid=diagram)
 
 

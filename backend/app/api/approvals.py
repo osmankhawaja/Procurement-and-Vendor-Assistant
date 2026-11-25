@@ -28,6 +28,7 @@ _APPROVAL_STATUSES = {
     "approval_pending",
     "pending",
     "requires_approval",
+    "waiting_for_approval",
 }
 
 
@@ -87,10 +88,43 @@ def _thread_id(config: Any) -> str | None:
     return str(thread_id) if thread_id is not None else None
 
 
+def _has_active_interrupt_or_task(snapshot: ApprovalSnapshot) -> bool:
+    for task in snapshot.tasks:
+        if getattr(task, "interrupts", ()):
+            return True
+    return bool(snapshot.next)
+
+
 def _is_pending_approval(snapshot: ApprovalSnapshot) -> bool:
     values = snapshot.values
-    state_status = values.get("approval_status", values.get("status", ""))
-    if str(state_status).strip().lower() in _APPROVAL_STATUSES:
+    has_interrupt = False
+
+    for task in snapshot.tasks:
+        interrupts = getattr(task, "interrupts", ())
+        if interrupts:
+            has_interrupt = True
+            for interrupt in interrupts:
+                interrupt_value = getattr(interrupt, "value", None)
+                if isinstance(interrupt_value, Mapping):
+                    interrupt_type = str(
+                        interrupt_value.get("type", interrupt_value.get("kind", ""))
+                    ).lower()
+                    if "approval" in interrupt_type or "hitl" in interrupt_type:
+                        return True
+
+    # If there is an active interrupt on a task, treat it as pending approval.
+    if has_interrupt:
+        return True
+
+    # Otherwise, only treat state flags/statuses as pending if the graph is not finished
+    # (i.e., has upcoming `next` nodes or explicit approval flags without completion).
+    if not snapshot.next:
+        return False
+
+    state_status = str(
+        values.get("approval_status") or values.get("status") or ""
+    ).strip().lower()
+    if state_status in _APPROVAL_STATUSES:
         return True
     if values.get("approval_required") is True or values.get("requires_approval") is True:
         return True
@@ -100,22 +134,21 @@ def _is_pending_approval(snapshot: ApprovalSnapshot) -> bool:
         if "approval" in task_name or "hitl" in task_name:
             return True
 
-        for interrupt in getattr(task, "interrupts", ()):
-            interrupt_value = getattr(interrupt, "value", None)
-            if isinstance(interrupt_value, Mapping):
-                interrupt_type = str(
-                    interrupt_value.get("type", interrupt_value.get("kind", ""))
-                ).lower()
-                if "approval" in interrupt_type or "hitl" in interrupt_type:
-                    return True
     return False
+
+
+def _resolve_status_label(values: Mapping[str, Any]) -> str:
+    raw = values.get("approval_status") or values.get("status")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return "pending"
 
 
 def _approval_details(values: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: values[key]
         for key in _APPROVAL_DETAIL_KEYS
-        if key in values
+        if key in values and values[key] is not None
     }
 
 
@@ -154,7 +187,7 @@ async def list_pending_approvals(
         pending.append(
             ApprovalItem(
                 thread_id=thread_id,
-                status=str(values.get("approval_status", "pending")),
+                status=_resolve_status_label(values),
                 next=list(snapshot.next),
                 created_at=snapshot.created_at,
                 details=jsonable_encoder(_approval_details(values)),
@@ -188,7 +221,7 @@ async def resolve_approval(
         "run_name": "procurement_approval",
     }
     snapshot = await graph.aget_state(config)
-    if not _is_pending_approval(snapshot):
+    if not _is_pending_approval(snapshot) and not _has_active_interrupt_or_task(snapshot):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This workflow is not waiting for an approval decision.",

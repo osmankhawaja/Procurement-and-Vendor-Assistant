@@ -35,7 +35,7 @@ class Settings(BaseSettings):
         default="gemini-3.5-flash-lite", validation_alias="FALLBACK_MODEL"
     )
     embedding_model: str = Field(
-        default="text-embedding-004", validation_alias="EMBEDDING_MODEL"
+        default="models/gemini-embedding-001", validation_alias="EMBEDDING_MODEL"
     )
 
     langchain_api_key: str = Field(
@@ -128,19 +128,19 @@ class Settings(BaseSettings):
             raise ValueError("must be between 0 and 1")
         return value
 
-    def checkpoint_db_path(self) -> Path:
-        """Return the checkpoint database path as an absolute path."""
-        path = Path(self.langgraph_checkpoint_db_path)
+    def _resolve_repo_path(self, raw_path: str) -> Path:
+        path = Path(raw_path.strip())
         if not path.is_absolute():
             path = PROJECT_ROOT / path
         return path.resolve()
 
+    def checkpoint_db_path(self) -> Path:
+        """Return the checkpoint database path as an absolute path."""
+        return self._resolve_repo_path(self.langgraph_checkpoint_db_path)
+
     def erp_db_path(self) -> Path:
         """Return the ERP database path as an absolute path."""
-        path = Path(self.erp_database_path)
-        if not path.is_absolute():
-            path = PROJECT_ROOT / path
-        return path.resolve()
+        return self._resolve_repo_path(self.erp_database_path)
 
 
 @lru_cache
